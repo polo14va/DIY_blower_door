@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible problem
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please include enough detail so maintainers can reproduce quickly.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One-line description of the bug
+      placeholder: OTA upload fails at 100% with HTTP 409
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps, commands, and expected vs actual behavior
+      placeholder: |
+        1. Run SKIP_FLASH=1 ./scripts/build_flash_rp2350.sh
+        2. Open UI and start OTA upload
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and diagnostics
+      description: Paste relevant logs from build/runtime/UI
+      render: shell
+
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Pico SDK version, board, toolchain
+      placeholder: macOS 14, Pico SDK 2.2.0, Pico 2 W, arm-none-eabi 14.2
+    validations:
+      required: true

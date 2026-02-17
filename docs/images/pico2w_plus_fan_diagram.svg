@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">DIY Blower Door prototype: Raspberry Pi Pico 2 W + Fan</title>
+  <desc id="desc">Simplified diagram showing a Raspberry Pi Pico 2 W connected to a blower fan for airtightness testing.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f6f8fa; }
+      .card { fill: #ffffff; stroke: #d0d7de; stroke-width: 2; }
+      .title { font: 700 34px Arial, sans-serif; fill: #24292f; }
+      .label { font: 600 20px Arial, sans-serif; fill: #24292f; }
+      .small { font: 500 16px Arial, sans-serif; fill: #57606a; }
+      .line { stroke: #0969da; stroke-width: 5; fill: none; stroke-linecap: round; }
+      .pin { fill: #cf222e; }
+      .fan-body { fill: #1f6feb; }
+      .fan-center { fill: #f0f6fc; }
+      .fan-blade { fill: #79c0ff; }
+      .accent { fill: #2da44e; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="560" rx="20" />
+
+  <text class="title" x="60" y="70">DIY Blower Door: Pico 2 W + Fan</text>
+  <text class="small" x="60" y="102">Concept illustration for project overview</text>
+
+  <!-- Pico card -->
+  <rect class="card" x="70" y="140" width="520" height="330" rx="20" />
+  <text class="label" x="100" y="185">Raspberry Pi Pico 2 W (RP2350)</text>
+  <rect x="100" y="215" width="230" height="130" rx="10" fill="#0d1117" />
+  <rect x="120" y="235" width="190" height="90" rx="8" fill="#1f6feb" />
+  <circle cx="345" cy="252" r="10" class="accent" />
+  <text class="small" x="100" y="390">Sensor + control firmware</text>
+  <text class="small" x="100" y="418">Wi-Fi + Web UI + OTA</text>
+
+  <!-- Pins -->
+  <circle class="pin" cx="520" cy="250" r="8" />
+  <circle class="pin" cx="520" cy="290" r="8" />
+  <text class="small" x="540" y="255">GPIO</text>
+  <text class="small" x="540" y="295">PWM/Trigger</text>
+
+  <!-- Cable -->
+  <path class="line" d="M 528 250 C 700 240, 760 230, 820 220" />
+  <path class="line" d="M 528 290 C 700 300, 760 320, 820 330" />
+
+  <!-- Fan card -->
+  <rect class="card" x="820" y="140" width="320" height="330" rx="20" />
+  <text class="label" x="850" y="185">Blower Fan</text>
+
+  <circle class="fan-body" cx="980" cy="305" r="105" />
+  <circle class="fan-center" cx="980" cy="305" r="22" />
+
+  <path class="fan-blade" d="M980 210 C1010 230,1015 260,995 285 C985 275,975 245,980 210 Z"/>
+  <path class="fan-blade" d="M1075 305 C1055 335,1025 340,1000 320 C1010 310,1040 300,1075 305 Z"/>
+  <path class="fan-blade" d="M980 400 C950 380,945 350,965 325 C975 335,985 365,980 400 Z"/>
+  <path class="fan-blade" d="M885 305 C905 275,935 270,960 290 C950 300,920 310,885 305 Z"/>
+
+  <text class="small" x="860" y="430">Controlled airflow for</text>
+  <text class="small" x="860" y="452">airtightness measurements</text>
+</svg>

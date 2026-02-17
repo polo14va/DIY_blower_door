@@ -1,0 +1,80 @@
+name: Firmware Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi
+
+      - name: Fetch Pico SDK
+        run: |
+          git clone --depth 1 --branch 2.2.0 https://github.com/raspberrypi/pico-sdk .deps/pico-sdk
+          git -C .deps/pico-sdk submodule update --init
+
+      - name: Fetch FreeRTOS kernel
+        run: |
+          git clone --depth 1 --branch V11.1.0 https://github.com/FreeRTOS/FreeRTOS-Kernel.git .deps/FreeRTOS-Kernel
+
+      - name: Build firmware
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/.deps/pico-sdk
+          FREERTOS_KERNEL_PATH: ${{ github.workspace }}/.deps/FreeRTOS-Kernel
+          FIRMWARE_VERSION_OVERRIDE: ${{ github.ref_name }}
+        run: |
+          VERSION_FROM_TAG="${FIRMWARE_VERSION_OVERRIDE#v}"
+          export FIRMWARE_VERSION_OVERRIDE="${VERSION_FROM_TAG}"
+          SKIP_FLASH=1 ./scripts/build_flash_rp2350.sh
+
+      - name: Decide latest release marker
+        id: latest_marker
+        run: |
+          CURRENT_VERSION="${GITHUB_REF_NAME#v}"
+          mapfile -t ALL_VERSIONS < <(git tag -l 'v*' | sed -E 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)
+          HIGHEST_VERSION="$(printf '%s\n' "${ALL_VERSIONS[@]}" "${CURRENT_VERSION}" | sed '/^$/d' | sort -V | tail -n1)"
+
+          if [[ "${CURRENT_VERSION}" == "${HIGHEST_VERSION}" ]]; then
+            echo "make_latest=true" >> "${GITHUB_OUTPUT}"
+            echo "Current tag ${GITHUB_REF_NAME} is highest (${HIGHEST_VERSION}); marking release as Latest."
+          else
+            echo "make_latest=false" >> "${GITHUB_OUTPUT}"
+            echo "Current tag ${GITHUB_REF_NAME} is not highest (${HIGHEST_VERSION}); release will not be Latest."
+          fi
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.ref_name }}
+          path: |
+            build/blower_pico_c.bin
+            build/blower_pico_c.uf2
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          make_latest: ${{ steps.latest_marker.outputs.make_latest }}
+          files: |
+            build/blower_pico_c.bin
+            build/blower_pico_c.uf2

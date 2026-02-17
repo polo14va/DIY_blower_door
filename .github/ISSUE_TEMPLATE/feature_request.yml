@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest an enhancement
+labels: [enhancement]
+body:
+  - type: input
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What limitation are you hitting today?
+      placeholder: Replication takes too long because setup steps are scattered
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior and why it helps
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workaround or alternative solution
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Build/tooling
+        - Firmware runtime
+        - Web UI
+        - OTA
+        - Documentation
+        - Other
+    validations:
+      required: true

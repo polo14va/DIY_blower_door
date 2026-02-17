@@ -1,0 +1,190 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f8fbff"/>
+      <stop offset="100%" stop-color="#eef4ff"/>
+    </linearGradient>
+    <linearGradient id="boardGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dbe7fb"/>
+      <stop offset="100%" stop-color="#c9dbf7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#1e293b" flood-opacity="0.18"/>
+    </filter>
+
+    <style>
+      .title { font: 700 40px 'Arial', sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 18px 'Arial', sans-serif; fill: #334155; }
+      .box-title { font: 700 34px 'Arial', sans-serif; fill: #0f172a; }
+      .section-title { font: 700 28px 'Arial', sans-serif; fill: #0f172a; }
+      .label { font: 600 19px 'Arial', sans-serif; fill: #0f172a; }
+      .small { font: 500 16px 'Arial', sans-serif; fill: #475569; }
+      .pin-label { font: 700 15px 'Arial', sans-serif; fill: #0f172a; }
+      .legend { font: 600 17px 'Arial', sans-serif; fill: #0f172a; }
+      .pin-badge { font: 700 14px 'Arial', sans-serif; fill: #1d4ed8; }
+
+      .bg { fill: url(#bgGrad); }
+      .board { fill: url(#boardGrad); stroke: #5b6f91; stroke-width: 3; rx: 24; }
+      .module { fill: #ffffff; stroke: #334155; stroke-width: 2.5; rx: 16; }
+      .legendbox { fill: #ffffff; stroke: #334155; stroke-width: 2.5; rx: 16; }
+      .pin-dot { fill: #1e293b; }
+      .port-dot { fill: #0f172a; }
+
+      .wire { fill: none; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+      .zc { stroke: #f97316; }
+      .d1 { stroke: #a855f7; }
+      .sda { stroke: #16a34a; }
+      .scl { stroke: #2563eb; }
+      .vcc { stroke: #ef4444; }
+      .gnd { stroke: #111827; }
+      .ledsig { stroke: #eab308; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="1000"/>
+
+  <text class="title" x="48" y="62">RP2350 Pico 2 W - Wiring Schematic (Blower Door)</text>
+  <text class="subtitle" x="48" y="92">Dimmer (Z-C, D1), dual ADP910 on separate I2C buses, and external status LED.</text>
+
+  <!-- Main board -->
+  <rect class="board" x="520" y="150" width="560" height="640" filter="url(#shadow)"/>
+  <text class="box-title" x="640" y="212">Raspberry Pi Pico 2 W</text>
+  <text class="small" x="700" y="240">Logical wiring map</text>
+
+  <!-- Pico left-side pins -->
+  <circle class="pin-dot" cx="520" cy="300" r="7"/>
+  <text class="pin-label" x="390" y="306">Pin 4 / GPIO2 (Z-C)</text>
+
+  <circle class="pin-dot" cx="520" cy="360" r="7"/>
+  <text class="pin-label" x="392" y="366">Pin 5 / GPIO3 (D1)</text>
+
+  <circle class="pin-dot" cx="520" cy="700" r="7"/>
+  <text class="pin-label" x="330" y="706">Any GND pin (common ground)</text>
+
+  <!-- Pico right-side pins -->
+  <circle class="pin-dot" cx="1080" cy="300" r="7"/>
+  <text class="pin-label" x="1096" y="306">Pin 6 / GPIO4 (I2C0 SDA)</text>
+
+  <circle class="pin-dot" cx="1080" cy="360" r="7"/>
+  <text class="pin-label" x="1096" y="366">Pin 7 / GPIO5 (I2C0 SCL)</text>
+
+  <circle class="pin-dot" cx="1080" cy="450" r="7"/>
+  <text class="pin-label" x="1096" y="456">Pin 9 / GPIO6 (I2C1 SDA)</text>
+
+  <circle class="pin-dot" cx="1080" cy="510" r="7"/>
+  <text class="pin-label" x="1096" y="516">Pin 10 / GPIO7 (I2C1 SCL)</text>
+
+  <circle class="pin-dot" cx="1080" cy="590" r="7"/>
+  <text class="pin-label" x="1096" y="596">Pin 11 / GPIO8 (EXT LED)</text>
+
+  <circle class="pin-dot" cx="1080" cy="700" r="7"/>
+  <text class="pin-label" x="1096" y="706">Pin 36 / 3V3(OUT)</text>
+
+  <!-- Dimmer module -->
+  <rect class="module" x="60" y="220" width="380" height="240" filter="url(#shadow)"/>
+  <text class="section-title" x="145" y="272">Dimmer Module</text>
+
+  <text class="label" x="94" y="327">Z-C (zero-cross output)</text>
+  <circle class="port-dot" cx="440" cy="320" r="6"/>
+
+  <text class="label" x="94" y="377">D1 (gate trigger input)</text>
+  <circle class="port-dot" cx="440" cy="370" r="6"/>
+
+  <text class="label" x="94" y="427">GND (logic ground)</text>
+  <circle class="port-dot" cx="440" cy="420" r="6"/>
+
+  <!-- ADP910 #1 -->
+  <rect class="module" x="1130" y="160" width="430" height="280" filter="url(#shadow)"/>
+  <text class="section-title" x="1236" y="212">ADP910 #1 (Fan)</text>
+
+  <text class="label" x="1166" y="272">SDA</text>
+  <text class="pin-badge" x="1245" y="272">Pin 1</text>
+  <circle class="port-dot" cx="1130" cy="264" r="6"/>
+
+  <text class="label" x="1166" y="322">SCL</text>
+  <text class="pin-badge" x="1245" y="322">Pin 2</text>
+  <circle class="port-dot" cx="1130" cy="314" r="6"/>
+
+  <text class="label" x="1166" y="372">VCC (3.3V)</text>
+  <text class="pin-badge" x="1310" y="372">Pin 3</text>
+  <circle class="port-dot" cx="1130" cy="364" r="6"/>
+
+  <text class="label" x="1166" y="422">GND</text>
+  <text class="pin-badge" x="1245" y="422">Pin 4</text>
+  <circle class="port-dot" cx="1130" cy="414" r="6"/>
+
+  <text class="small" x="1358" y="430">I2C address 0x25</text>
+
+  <!-- ADP910 #2 -->
+  <rect class="module" x="1130" y="500" width="430" height="280" filter="url(#shadow)"/>
+  <text class="section-title" x="1198" y="552">ADP910 #2 (Envelope)</text>
+
+  <text class="label" x="1166" y="612">SDA</text>
+  <text class="pin-badge" x="1245" y="612">Pin 1</text>
+  <circle class="port-dot" cx="1130" cy="604" r="6"/>
+
+  <text class="label" x="1166" y="662">SCL</text>
+  <text class="pin-badge" x="1245" y="662">Pin 2</text>
+  <circle class="port-dot" cx="1130" cy="654" r="6"/>
+
+  <text class="label" x="1166" y="712">VCC (3.3V)</text>
+  <text class="pin-badge" x="1310" y="712">Pin 3</text>
+  <circle class="port-dot" cx="1130" cy="704" r="6"/>
+
+  <text class="label" x="1166" y="762">GND</text>
+  <text class="pin-badge" x="1245" y="762">Pin 4</text>
+  <circle class="port-dot" cx="1130" cy="754" r="6"/>
+
+  <text class="small" x="1358" y="770">I2C address 0x25</text>
+
+  <!-- External LED module -->
+  <rect class="module" x="500" y="830" width="690" height="130" filter="url(#shadow)"/>
+  <text class="section-title" x="728" y="884">External Status LED</text>
+  <text class="label" x="530" y="930">GPIO8 -> resistor (220R..1k) -> LED anode, LED cathode -> GND</text>
+
+  <!-- Wires: Dimmer -->
+  <path class="wire zc" d="M 440 320 C 470 320, 485 300, 520 300"/>
+  <path class="wire d1" d="M 440 370 C 470 370, 485 360, 520 360"/>
+  <path class="wire gnd" d="M 440 420 C 500 420, 500 700, 520 700"/>
+
+  <!-- Wires: ADP910 #1 (from I2C0) -->
+  <path class="wire sda" d="M 1080 300 C 1110 300, 1116 264, 1130 264"/>
+  <path class="wire scl" d="M 1080 360 C 1110 360, 1116 314, 1130 314"/>
+  <path class="wire vcc" d="M 1080 700 C 1110 700, 1116 364, 1130 364"/>
+  <path class="wire gnd" d="M 520 700 C 930 700, 980 414, 1130 414"/>
+
+  <!-- Wires: ADP910 #2 (from I2C1) -->
+  <path class="wire sda" d="M 1080 450 C 1110 450, 1116 604, 1130 604"/>
+  <path class="wire scl" d="M 1080 510 C 1110 510, 1116 654, 1130 654"/>
+  <path class="wire vcc" d="M 1080 700 C 1110 700, 1116 704, 1130 704"/>
+  <path class="wire gnd" d="M 520 700 C 980 700, 1010 754, 1130 754"/>
+
+  <!-- Wires: External LED -->
+  <path class="wire ledsig" d="M 1080 590 C 1130 590, 1130 900, 1190 900"/>
+  <path class="wire gnd" d="M 520 700 C 560 700, 560 935, 680 935"/>
+
+  <!-- Legend -->
+  <rect class="legendbox" x="40" y="520" width="430" height="420" filter="url(#shadow)"/>
+  <text class="section-title" x="110" y="568">Cable Color Legend</text>
+
+  <line class="wire zc" x1="80" y1="622" x2="180" y2="622"/>
+  <text class="legend" x="200" y="628">Orange: Z-C (zero-cross)</text>
+
+  <line class="wire d1" x1="80" y1="672" x2="180" y2="672"/>
+  <text class="legend" x="200" y="678">Purple: D1 (dimmer trigger)</text>
+
+  <line class="wire sda" x1="80" y1="722" x2="180" y2="722"/>
+  <text class="legend" x="200" y="728">Green: I2C SDA</text>
+
+  <line class="wire scl" x1="80" y1="772" x2="180" y2="772"/>
+  <text class="legend" x="200" y="778">Blue: I2C SCL</text>
+
+  <line class="wire vcc" x1="80" y1="822" x2="180" y2="822"/>
+  <text class="legend" x="200" y="828">Red: 3V3 supply</text>
+
+  <line class="wire gnd" x1="80" y1="872" x2="180" y2="872"/>
+  <text class="legend" x="200" y="878">Black: GND</text>
+
+  <line class="wire ledsig" x1="80" y1="922" x2="180" y2="922"/>
+  <text class="legend" x="200" y="928">Yellow: External LED signal</text>
+</svg>
