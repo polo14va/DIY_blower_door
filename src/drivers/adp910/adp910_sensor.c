@@ -94,8 +94,48 @@ static void adp910_recover_bus(const adp910_sensor_t *sensor) {
     return;
   }
 
+  const uint sda = sensor->port_config.sda_pin;
+  const uint scl = sensor->port_config.scl_pin;
+
   i2c_deinit(sensor->port_config.i2c_instance);
-  sleep_us(50u);
+
+  /* Switch pins to GPIO so we can bit-bang the recovery sequence. */
+  gpio_set_function(sda, GPIO_FUNC_SIO);
+  gpio_set_function(scl, GPIO_FUNC_SIO);
+  gpio_set_dir(sda, GPIO_IN);
+  gpio_pull_up(sda);
+  gpio_set_dir(scl, GPIO_OUT);
+  gpio_pull_up(scl);
+  gpio_put(scl, true);
+  sleep_us(10u);
+
+  /*
+   * Clock SCL up to 9 times.  A stuck slave will shift out the rest
+   * of its byte and release SDA once it sees enough clocks.
+   */
+  for (uint8_t i = 0u; i < 9u; ++i) {
+    if (gpio_get(sda)) {
+      break; /* SDA released — bus is free */
+    }
+    gpio_put(scl, false);
+    sleep_us(5u);
+    gpio_put(scl, true);
+    sleep_us(5u);
+  }
+
+  /*
+   * Generate a STOP condition (SDA low→high while SCL is high)
+   * to make sure every device on the bus recognises a clean idle state.
+   */
+  gpio_set_dir(sda, GPIO_OUT);
+  gpio_put(sda, false);
+  sleep_us(5u);
+  gpio_put(scl, true);
+  sleep_us(5u);
+  gpio_put(sda, true);
+  sleep_us(10u);
+
+  /* Re-initialise the hardware I2C peripheral. */
   adp910_apply_i2c_config(sensor);
   sleep_us(50u);
 }

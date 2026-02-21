@@ -942,7 +942,8 @@ static int web_status_json_write_common(const web_status_snapshot_t *status,
   if (logs_enabled) {
     return snprintf(
         payload, payload_size,
-        "{\"pwm\":%u,\"led\":%u,\"relay\":%u,\"line_sync\":%u,"
+        "{\"fw\":\"" APP_FIRMWARE_VERSION "\","
+        "\"pwm\":%u,\"led\":%u,\"relay\":%u,\"line_sync\":%u,"
         "\"input\":%u,\"frequency\":%.1f,\"dp1_pressure\":%.3f,"
         "\"dp1_temperature\":%.3f,\"dp1_ok\":%s,\"dp2_pressure\":%.3f,"
         "\"dp2_temperature\":%.3f,\"dp2_ok\":%s,\"dp_pressure\":%.3f,"
@@ -961,7 +962,8 @@ static int web_status_json_write_common(const web_status_snapshot_t *status,
 
   return snprintf(
       payload, payload_size,
-      "{\"pwm\":%u,\"led\":%u,\"relay\":%u,\"line_sync\":%u,\"input\":%u,"
+      "{\"fw\":\"" APP_FIRMWARE_VERSION "\","
+      "\"pwm\":%u,\"led\":%u,\"relay\":%u,\"line_sync\":%u,\"input\":%u,"
       "\"frequency\":%.1f,\"dp1_pressure\":%.3f,\"dp1_temperature\":%.3f,"
       "\"dp1_ok\":%s,\"dp2_pressure\":%.3f,\"dp2_temperature\":%.3f,"
       "\"dp2_ok\":%s,\"dp_pressure\":%.3f,\"dp_temperature\":%.3f,"

@@ -5,19 +5,18 @@ let hasReceivedSseEvent = false;
 let pwmRequestInFlight = false;
 let pendingPwmValue = null;
 let latestTelemetry = null;
-let otaStatusRefreshTimer = null;
 
 const SSE_RETRY_BASE_MS = 1500;
 const SSE_RETRY_MAX_MS = 12000;
 const ACH_WINDOW_MS = 5000;
-const OTA_STATUS_REFRESH_INTERVAL_MS = 15000;
 const MIN_BUILDING_PRESSURE_FOR_ACH = 9;
 const FULL_APERTURE_DIAMETER_CM = 31;
 const SEA_LEVEL_AIR_DENSITY = 1.225;
 const DEFAULT_ALTITUDE_M = 650;
-const SETTINGS_STORAGE_KEY = 'blower_ui_settings_v1';
-const OTA_CHUNK_SIZE_BYTES = 768;
-const API_ROUTES = Object.freeze({
+const SETTINGS_KEY = 'blower_ui_v2';
+const OTA_CHUNK_SIZE = 768;
+
+const API = Object.freeze({
     events: '/events',
     pwm: '/api/pwm',
     led: '/api/led',
@@ -30,1244 +29,793 @@ const API_ROUTES = Object.freeze({
     otaApply: '/api/ota/apply',
 });
 
-const CONTROL_RAMP_THRESHOLD_RATIO = 0.97;
-const CONTROL_PID = {
-    kp: 1.15,
-    ki: 0.2,
-    kd: 0.06,
-    deadbandPa: 0.8,
-    basePwm: 62,
-};
+const PID = { kp: 1.15, ki: 0.2, kd: 0.06, deadband: 0.8, base: 62 };
+const RAMP_RATIO = 0.97;
 
 const state = {
-    selectedMode: 'n50',
+    activeMode: 'manual',
+    autoTestType: 'n50',
+    semiTargetPa: null,
     achHistory: [],
     lastManualSpeed: 40,
-    baseline: {
-        fanOffset: null,
-        envelopeOffset: null,
-        capturedAt: null,
-    },
+    baseline: { fanOffset: null, envelopeOffset: null, capturedAt: null },
     control: {
         active: false,
         stage: 'idle',
         targetPa: 50,
         lastSetPwm: null,
-        pid: {
-            integral: 0,
-            lastError: 0,
-            lastTime: Date.now(),
-        },
+        pid: { integral: 0, lastError: 0, lastTime: Date.now() },
     },
-    sensorHealth: {
-        fanEverValid: false,
-        envelopeEverValid: false,
-        faultCycles: 0,
-    },
-    ota: {
-        uploadInProgress: false,
-        applyInProgress: false,
-        versionTouched: false,
-    },
+    sensorHealth: { fanEverValid: false, envelopeEverValid: false, faultCycles: 0 },
+    ota: { uploadInProgress: false, applyInProgress: false, versionTouched: false },
 };
+
+const $ = (id) => document.getElementById(id);
 
 const refs = {
-    connectionDot: document.getElementById('connectionDot'),
-    connectionLabel: document.getElementById('connectionLabel'),
-    connectionDetail: document.getElementById('connectionDetail'),
-    firmwareVersionTop: document.getElementById('firmwareVersionTop'),
-    firmwareVersionFooter: document.getElementById('firmwareVersionFooter'),
-    lastUpdate: document.getElementById('lastUpdate'),
-    sessionState: document.getElementById('sessionState'),
-
-    heroPressure: document.getElementById('heroPressure'),
-    heroTarget: document.getElementById('heroTarget'),
-    heroAch: document.getElementById('heroAch'),
-    heroAchInstant: document.getElementById('heroAchInstant'),
-    heroModeLabel: document.getElementById('heroModeLabel'),
-
-    modeN50Btn: document.getElementById('modeN50Btn'),
-    modeN75Btn: document.getElementById('modeN75Btn'),
-    settingsToggleBtn: document.getElementById('settingsToggleBtn'),
-    settingsCloseBtn: document.getElementById('settingsCloseBtn'),
-    settingsPanel: document.getElementById('settingsPanel'),
-    settingsBackdrop: document.getElementById('settingsBackdrop'),
-
-    buildingVolume: document.getElementById('buildingVolume'),
-    fanApertureCm: document.getElementById('fanApertureCm'),
-    altitude: document.getElementById('altitude'),
-    fanCoefC: document.getElementById('fanCoefC'),
-    fanCoefN: document.getElementById('fanCoefN'),
-    anemoSpeed: document.getElementById('anemoSpeed'),
-    applyAnemoBtn: document.getElementById('applyAnemoBtn'),
-    apertureAreaLabel: document.getElementById('apertureAreaLabel'),
-    otaVersionInput: document.getElementById('otaVersionInput'),
-    otaFileInput: document.getElementById('otaFileInput'),
-    otaUploadBtn: document.getElementById('otaUploadBtn'),
-    otaApplyBtn: document.getElementById('otaApplyBtn'),
-    otaProgressBar: document.getElementById('otaProgressBar'),
-    otaProgressLabel: document.getElementById('otaProgressLabel'),
-    firmwareVersionLabel: document.getElementById('firmwareVersionLabel'),
-
-    calibrateBtn: document.getElementById('calibrateBtn'),
-    baselineStatus: document.getElementById('baselineStatus'),
-    startTestBtn: document.getElementById('startTestBtn'),
-    stopTestBtn: document.getElementById('stopTestBtn'),
-
-    fanPowerToggle: document.getElementById('fanPowerToggle'),
-    autoHoldToggle: document.getElementById('autoHoldToggle'),
-    fanSpeed: document.getElementById('fanSpeed'),
-    fanSpeedValue: document.getElementById('fanSpeedValue'),
-
-    dpVentPressureValue: document.getElementById('dpVentPressureValue'),
-    dpVentTemperatureValue: document.getElementById('dpVentTemperatureValue'),
-    dpVentStatus: document.getElementById('dpVentStatus'),
-    dpBuildingPressureValue: document.getElementById('dpBuildingPressureValue'),
-    dpBuildingTemperatureValue: document.getElementById('dpBuildingTemperatureValue'),
-    dpBuildingStatus: document.getElementById('dpBuildingStatus'),
-    fanFrequencyValue: document.getElementById('fanFrequencyValue'),
-    sensorPwmValue: document.getElementById('sensorPwmValue'),
-    quickButtons: document.querySelectorAll('[data-speed]'),
+    connDot: $('connDot'), connLabel: $('connLabel'), statusMsg: $('statusMsg'),
+    calBanner: $('calBanner'), calTitle: $('calTitle'), calDetail: $('calDetail'),
+    calibrateBtn: $('calibrateBtn'),
+    heroAch: $('heroAch'), heroAchInstant: $('heroAchInstant'),
+    heroModeLabel: $('heroModeLabel'), heroPa: $('heroPa'), heroTarget: $('heroTarget'),
+    modeCard: $('modeCard'),
+    modeTabs: document.querySelectorAll('.mode-tab'),
+    panelManual: $('panelManual'), panelSemi: $('panelSemi'), panelAuto: $('panelAuto'),
+    pwmDisplay: $('pwmDisplay'), fanSlider: $('fanSlider'),
+    quickBtns: document.querySelectorAll('[data-speed]'),
+    pressureBtns: document.querySelectorAll('[data-pa]'),
+    manualStopBtn: $('manualStopBtn'),
+    semiStopBtn: $('semiStopBtn'),
+    autoN50Btn: $('autoN50Btn'), autoN75Btn: $('autoN75Btn'),
+    startTestBtn: $('startTestBtn'), stopTestBtn: $('stopTestBtn'),
+    fanPaVal: $('fanPaVal'), fanTempVal: $('fanTempVal'), fanStatusPill: $('fanStatusPill'),
+    bldgPaVal: $('bldgPaVal'), bldgTempVal: $('bldgTempVal'), bldgStatusPill: $('bldgStatusPill'),
+    lineFreqVal: $('lineFreqVal'), sensorPwmVal: $('sensorPwmVal'),
+    settingsBtn: $('settingsBtn'), closeDrawerBtn: $('closeDrawerBtn'),
+    settingsDrawer: $('settingsDrawer'), drawerBackdrop: $('drawerBackdrop'),
+    buildingVolume: $('buildingVolume'), fanApertureCm: $('fanApertureCm'),
+    altitude: $('altitude'), fanCoefC: $('fanCoefC'), fanCoefN: $('fanCoefN'),
+    anemoSpeed: $('anemoSpeed'), applyAnemoBtn: $('applyAnemoBtn'),
+    apertureAreaLabel: $('apertureAreaLabel'),
+    otaVersionInput: $('otaVersionInput'), otaFileInput: $('otaFileInput'),
+    otaUploadBtn: $('otaUploadBtn'), otaApplyBtn: $('otaApplyBtn'),
+    otaProgressBar: $('otaProgressBar'), otaProgressLabel: $('otaProgressLabel'),
+    fwVersionLabel: $('fwVersionLabel'), fwVersion: $('fwVersion'),
+    lastUpdate: $('lastUpdate'),
 };
 
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-const pad2 = (value) => String(value).padStart(2, '0');
+/* ── Utilities ── */
 
-function formatTime(date = new Date()) {
-    return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const pad2 = (v) => String(v).padStart(2, '0');
+const fmtTime = (d = new Date()) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+const toNum = (v, fb = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fb; };
+const toBool = (v) => v === true || v === 1 || v === 'true' || v === '1';
+const fmt = (v, u, d = 1) => Number.isFinite(v) ? `${v.toFixed(d)} ${u}` : `-- ${u}`;
+
+function isCalibrated() {
+    return Number.isFinite(state.baseline.fanOffset) && Number.isFinite(state.baseline.envelopeOffset);
 }
 
-function toFiniteNumber(value, fallback = 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
+function setStatus(text) {
+    if (refs.statusMsg) refs.statusMsg.textContent = text;
 }
 
-function parseBooleanFlag(value) {
-    if (typeof value === 'boolean') {
-        return value;
-    }
-    if (typeof value === 'number') {
-        return value !== 0;
-    }
-    if (typeof value === 'string') {
-        return value === 'true' || value === '1';
-    }
-    return false;
+function stampUpdate() {
+    if (refs.lastUpdate) refs.lastUpdate.textContent = `Last update: ${fmtTime()}`;
 }
 
-function formatMetric(value, unit, decimals = 1) {
-    if (!Number.isFinite(value)) {
-        return `-- ${unit}`;
-    }
-    return `${value.toFixed(decimals)} ${unit}`;
+function setConn(kind, label) {
+    if (!refs.connDot || !refs.connLabel) return;
+    refs.connDot.classList.remove('ok', 'err');
+    if (kind === 'ok') { refs.connDot.classList.add('ok'); refs.connLabel.textContent = label || 'Connected'; }
+    else if (kind === 'err') { refs.connDot.classList.add('err'); refs.connLabel.textContent = label || 'Error'; }
+    else { refs.connLabel.textContent = label || 'Offline'; }
 }
 
-function setOtaProgress(progressPercent, label) {
-    const normalized = clamp(toFiniteNumber(progressPercent, 0), 0, 100);
-    if (refs.otaProgressBar) {
-        refs.otaProgressBar.value = normalized;
-    }
-    if (refs.otaProgressLabel) {
-        refs.otaProgressLabel.textContent = label || `${Math.round(normalized)}%`;
-    }
+/* ── OTA helpers ── */
+
+function setOtaProgress(pct, label) {
+    const v = clamp(toNum(pct, 0), 0, 100);
+    if (refs.otaProgressBar) refs.otaProgressBar.value = v;
+    if (refs.otaProgressLabel) refs.otaProgressLabel.textContent = label || `${Math.round(v)}%`;
 }
 
-function setOtaControlsBusy(isBusy) {
-    if (refs.otaUploadBtn) {
-        refs.otaUploadBtn.disabled = isBusy;
-    }
-    if (refs.otaApplyBtn) {
-        refs.otaApplyBtn.disabled = isBusy;
-    }
+function setOtaBusy(busy) {
+    if (refs.otaUploadBtn) refs.otaUploadBtn.disabled = busy;
+    if (refs.otaApplyBtn) refs.otaApplyBtn.disabled = busy;
 }
 
-function bytesToBase64(uint8Array) {
-    let binary = '';
-    const chunkSize = 0x8000;
-    for (let index = 0; index < uint8Array.length; index += chunkSize) {
-        const chunk = uint8Array.subarray(index, index + chunkSize);
-        binary += String.fromCharCode(...chunk);
+function bytesToBase64(u8) {
+    let bin = '';
+    for (let i = 0; i < u8.length; i += 0x8000) {
+        bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
     }
-    return btoa(binary);
+    return btoa(bin);
 }
 
 function createCrc32Table() {
-    const table = new Uint32Array(256);
-    for (let index = 0; index < 256; index += 1) {
-        let value = index;
-        for (let bit = 0; bit < 8; bit += 1) {
-            if ((value & 1) !== 0) {
-                value = 0xedb88320 ^ (value >>> 1);
-            } else {
-                value >>>= 1;
-            }
-        }
-        table[index] = value >>> 0;
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+        let v = i;
+        for (let b = 0; b < 8; b++) v = (v & 1) ? (0xedb88320 ^ (v >>> 1)) : (v >>> 1);
+        t[i] = v >>> 0;
     }
-    return table;
+    return t;
 }
-
 const CRC32_TABLE = createCrc32Table();
 
-function computeCrc32(uint8Array) {
-    let crc = 0xffffffff;
-    for (let index = 0; index < uint8Array.length; index += 1) {
-        const byte = uint8Array[index];
-        crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-    }
-    return (crc ^ 0xffffffff) >>> 0;
+function crc32(u8) {
+    let c = 0xffffffff;
+    for (let i = 0; i < u8.length; i++) c = CRC32_TABLE[(c ^ u8[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
 }
 
-function setConnectionState(kind, detail) {
-    if (!refs.connectionDot || !refs.connectionLabel || !refs.connectionDetail) {
-        return;
+/* ── API helpers ── */
+
+async function postJson(url, body) {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const txt = await r.text();
+    let parsed = null;
+    if (txt) { try { parsed = JSON.parse(txt); } catch {} }
+    if (!r.ok) {
+        const reason = parsed?.reason || '';
+        const err = new Error(reason ? `HTTP ${r.status} ${reason}` : `HTTP ${r.status}`);
+        err.responsePayload = parsed;
+        throw err;
     }
-
-    refs.connectionDot.classList.remove('connected', 'error');
-
-    if (kind === 'connected') {
-        refs.connectionDot.classList.add('connected');
-        refs.connectionLabel.textContent = 'Connected';
-    } else if (kind === 'error') {
-        refs.connectionDot.classList.add('error');
-        refs.connectionLabel.textContent = 'Error';
-    } else {
-        refs.connectionLabel.textContent = 'Offline';
-    }
-
-    refs.connectionDetail.textContent = detail || '';
+    return parsed;
 }
 
-function setSessionState(text) {
-    if (refs.sessionState) {
-        refs.sessionState.textContent = `Status: ${text}`;
-    }
+async function sendCmd(endpoint, value) {
+    await postJson(API[endpoint] || `/api/${endpoint}`, { value });
 }
 
-function stampLastUpdate() {
-    if (refs.lastUpdate) {
-        refs.lastUpdate.textContent = `Last update: ${formatTime()}`;
-    }
-}
-
-function getSelectedTargetPressure() {
-    return state.selectedMode === 'n75' ? 75 : 50;
-}
-
-function updateModeButtons() {
-    if (refs.modeN50Btn) {
-        refs.modeN50Btn.classList.toggle('active', state.selectedMode === 'n50');
-    }
-    if (refs.modeN75Btn) {
-        refs.modeN75Btn.classList.toggle('active', state.selectedMode === 'n75');
-    }
-
-    const targetPressure = getSelectedTargetPressure();
-    if (refs.heroTarget) {
-        refs.heroTarget.textContent = `${targetPressure} Pa`;
-    }
-    if (refs.heroModeLabel) {
-        refs.heroModeLabel.textContent = state.selectedMode;
-    }
-    if (refs.startTestBtn) {
-        refs.startTestBtn.textContent = `Start ${state.selectedMode} test`;
+async function sendPwmCoalesced(value) {
+    const v = clamp(Math.round(toNum(value, 0)), 0, 100);
+    if (pwmRequestInFlight) { pendingPwmValue = v; return; }
+    pwmRequestInFlight = true;
+    try { await sendCmd('pwm', v); }
+    finally {
+        pwmRequestInFlight = false;
+        if (pendingPwmValue !== null && pendingPwmValue !== v) {
+            const next = pendingPwmValue; pendingPwmValue = null;
+            await sendPwmCoalesced(next);
+        } else { pendingPwmValue = null; }
     }
 }
 
-function updateStatusPill(statusElement, isOk, hasReading) {
-    if (!statusElement) {
-        return;
-    }
-
-    statusElement.classList.remove('ok', 'err');
-    if (!hasReading) {
-        statusElement.textContent = '--';
-        return;
-    }
-
-    statusElement.textContent = isOk ? 'OK' : 'ERR';
-    statusElement.classList.add(isOk ? 'ok' : 'err');
+function requestPwm(value) {
+    const v = clamp(Math.round(toNum(value, 0)), 0, 100);
+    if (state.control.lastSetPwm === v) return;
+    state.control.lastSetPwm = v;
+    updatePwmDisplay(v);
+    sendPwmCoalesced(v).then(() => setConn('ok', 'Connected')).catch(() => setConn('err', 'PWM error'));
 }
 
-function updateApertureAreaLabel() {
-    if (!refs.apertureAreaLabel) {
-        return;
-    }
+/* ── Settings persistence ── */
 
-    const diameterCm = clamp(toFiniteNumber(refs.fanApertureCm?.value, FULL_APERTURE_DIAMETER_CM), 5, 60);
-    const diameterM = diameterCm / 100;
-    const areaM2 = Math.PI * Math.pow(diameterM / 2, 2);
-    refs.apertureAreaLabel.textContent = `${areaM2.toFixed(4)} m²`;
-}
-
-function updateBaselineBadge() {
-    if (!refs.baselineStatus) {
-        return;
-    }
-
-    const fanOffset = state.baseline.fanOffset;
-    const envelopeOffset = state.baseline.envelopeOffset;
-    refs.baselineStatus.classList.remove('ok');
-
-    if (!Number.isFinite(fanOffset) || !Number.isFinite(envelopeOffset)) {
-        refs.baselineStatus.textContent = 'Zero calibration missing';
-        return;
-    }
-
-    const capturedTime = state.baseline.capturedAt ? formatTime(state.baseline.capturedAt) : '--';
-    refs.baselineStatus.textContent = `Zero OK · Fan ${fanOffset.toFixed(1)} Pa · Bldg ${envelopeOffset.toFixed(1)} Pa · ${capturedTime}`;
-    refs.baselineStatus.classList.add('ok');
-}
-
-function updateManualSpeedDisplay(value) {
-    const clampedValue = clamp(Math.round(toFiniteNumber(value, 0)), 0, 100);
-    if (refs.fanSpeedValue) {
-        refs.fanSpeedValue.textContent = String(clampedValue);
-    }
-    if (refs.sensorPwmValue) {
-        refs.sensorPwmValue.textContent = `${clampedValue} %`;
-    }
-    if (refs.fanSpeed && document.activeElement !== refs.fanSpeed) {
-        refs.fanSpeed.value = String(clampedValue);
-    }
-}
-
-function getAirDensity(altitudeMeters, temperatureC) {
-    const clampedAltitude = clamp(toFiniteNumber(altitudeMeters, DEFAULT_ALTITUDE_M), 0, 6000);
-    const pressurePa = 101325 * Math.pow(1 - 2.25577e-5 * clampedAltitude, 5.25588);
-    const tempKelvin = (Number.isFinite(temperatureC) ? temperatureC : 20) + 273.15;
-    return pressurePa / (287.05 * tempKelvin);
-}
-
-function getFlowCalibrationInputs() {
-    const volume = toFiniteNumber(refs.buildingVolume?.value, 0);
-    const coefficientC = toFiniteNumber(refs.fanCoefC?.value, 0);
-    const exponentN = toFiniteNumber(refs.fanCoefN?.value, 0);
-    const altitude = toFiniteNumber(refs.altitude?.value, DEFAULT_ALTITUDE_M);
-
-    const apertureCm = clamp(toFiniteNumber(refs.fanApertureCm?.value, FULL_APERTURE_DIAMETER_CM), 5, 60);
-    const apertureArea = Math.PI * Math.pow((apertureCm / 100) / 2, 2);
-    const fullArea = Math.PI * Math.pow((FULL_APERTURE_DIAMETER_CM / 100) / 2, 2);
-    const apertureScale = apertureArea / fullArea;
-
-    return {
-        volume,
-        coefficientC,
-        exponentN,
-        altitude,
-        apertureArea,
-        apertureScale,
-    };
-}
-
-function collectUiSettings() {
+function collectSettings() {
     return {
         buildingVolume: refs.buildingVolume?.value ?? '',
         fanApertureCm: refs.fanApertureCm?.value ?? '',
         altitude: refs.altitude?.value ?? String(DEFAULT_ALTITUDE_M),
-        fanCoefC: refs.fanCoefC?.value ?? '',
-        fanCoefN: refs.fanCoefN?.value ?? '',
-        selectedMode: state.selectedMode,
+        fanCoefC: refs.fanCoefC?.value ?? '', fanCoefN: refs.fanCoefN?.value ?? '',
+        autoTestType: state.autoTestType,
     };
 }
 
-function saveUiSettings() {
+function saveSettings() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(collectSettings())); } catch {}
+}
+
+function loadSettings() {
     try {
-        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(collectUiSettings()));
-    } catch (error) {
-        console.warn('Could not save local settings:', error);
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        if (!raw) { if (refs.altitude) refs.altitude.value = String(DEFAULT_ALTITUDE_M); return; }
+        const s = JSON.parse(raw);
+        if (refs.buildingVolume && s.buildingVolume !== undefined) refs.buildingVolume.value = String(s.buildingVolume);
+        if (refs.fanApertureCm && s.fanApertureCm !== undefined) refs.fanApertureCm.value = String(s.fanApertureCm);
+        if (refs.altitude) refs.altitude.value = s.altitude !== undefined ? String(s.altitude) : String(DEFAULT_ALTITUDE_M);
+        if (refs.fanCoefC && s.fanCoefC !== undefined) refs.fanCoefC.value = String(s.fanCoefC);
+        if (refs.fanCoefN && s.fanCoefN !== undefined) refs.fanCoefN.value = String(s.fanCoefN);
+        if (s.autoTestType === 'n50' || s.autoTestType === 'n75') state.autoTestType = s.autoTestType;
+    } catch {
+        if (refs.altitude) refs.altitude.value = String(DEFAULT_ALTITUDE_M);
     }
 }
 
-function applyUiSettings(saved) {
-    if (!saved || typeof saved !== 'object') {
+/* ── Calibration ── */
+
+function updateCalBanner() {
+    if (!refs.calBanner) return;
+    const ok = isCalibrated();
+    refs.calBanner.classList.toggle('ok', ok);
+    if (refs.modeCard) refs.modeCard.classList.toggle('locked', !ok);
+
+    if (!ok) {
+        if (refs.calTitle) refs.calTitle.textContent = 'Zero calibration required';
+        if (refs.calDetail) refs.calDetail.textContent = 'Calibrate sensors before starting any test';
+        if (refs.calibrateBtn) refs.calibrateBtn.textContent = 'Calibrate';
         return;
     }
-
-    if (refs.buildingVolume && saved.buildingVolume !== undefined) {
-        refs.buildingVolume.value = String(saved.buildingVolume);
-    }
-    if (refs.fanApertureCm && saved.fanApertureCm !== undefined) {
-        refs.fanApertureCm.value = String(saved.fanApertureCm);
-    }
-    if (refs.altitude) {
-        refs.altitude.value = saved.altitude !== undefined ? String(saved.altitude) : String(DEFAULT_ALTITUDE_M);
-    }
-    if (refs.fanCoefC && saved.fanCoefC !== undefined) {
-        refs.fanCoefC.value = String(saved.fanCoefC);
-    }
-    if (refs.fanCoefN && saved.fanCoefN !== undefined) {
-        refs.fanCoefN.value = String(saved.fanCoefN);
-    }
-    if (saved.selectedMode === 'n50' || saved.selectedMode === 'n75') {
-        state.selectedMode = saved.selectedMode;
-    }
+    const t = state.baseline.capturedAt ? fmtTime(state.baseline.capturedAt) : '--';
+    if (refs.calTitle) refs.calTitle.textContent = 'Sensors calibrated';
+    if (refs.calDetail) refs.calDetail.textContent =
+        `Fan ${state.baseline.fanOffset.toFixed(1)} Pa · Bldg ${state.baseline.envelopeOffset.toFixed(1)} Pa · ${t}`;
+    if (refs.calibrateBtn) refs.calibrateBtn.textContent = 'Re-calibrate';
 }
 
-function loadUiSettings() {
-    try {
-        const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-        if (!raw) {
-            if (refs.altitude) {
-                refs.altitude.value = String(DEFAULT_ALTITUDE_M);
-            }
-            return;
-        }
-        const parsed = JSON.parse(raw);
-        applyUiSettings(parsed);
-    } catch (error) {
-        console.warn('Could not load local settings:', error);
-        if (refs.altitude) {
-            refs.altitude.value = String(DEFAULT_ALTITUDE_M);
-        }
+function captureCalibration() {
+    if (!latestTelemetry) { setStatus('No telemetry for calibration'); return; }
+    const t = extractTelemetry(latestTelemetry);
+    if (!Number.isFinite(t.rawFanPa) || !Number.isFinite(t.rawEnvPa)) {
+        setStatus('No valid readings for calibration'); return;
     }
+    state.baseline.fanOffset = t.rawFanPa;
+    state.baseline.envelopeOffset = t.rawEnvPa;
+    state.baseline.capturedAt = new Date();
+    updateCalBanner();
+    resetAch();
+    setStatus('Zero calibration applied');
+    handleTelemetry(latestTelemetry, 'calibrated');
 }
 
-function setSettingsPanelOpen(open) {
-    if (!refs.settingsPanel) {
-        return;
-    }
+/* ── Mode management ── */
 
-    refs.settingsPanel.classList.toggle('open', open);
-    refs.settingsPanel.setAttribute('aria-hidden', open ? 'false' : 'true');
-    if (refs.settingsBackdrop) {
-        refs.settingsBackdrop.hidden = !open;
-    }
+function switchMode(mode) {
+    if (state.activeMode === mode) return;
+    if (state.control.active) stopControl(false);
+    state.activeMode = mode;
+
+    refs.modeTabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.mode === mode));
+    if (refs.panelManual) refs.panelManual.classList.toggle('hidden', mode !== 'manual');
+    if (refs.panelSemi) refs.panelSemi.classList.toggle('hidden', mode !== 'semi');
+    if (refs.panelAuto) refs.panelAuto.classList.toggle('hidden', mode !== 'auto');
+    updateTargetDisplay();
 }
 
-function computeAchForMode(fanPressurePa, buildingPressurePa, buildingTemperatureC) {
-    const targetPressure = getSelectedTargetPressure();
-    const flowInputs = getFlowCalibrationInputs();
+function getActiveTarget() {
+    if (state.control.active) return state.control.targetPa;
+    if (state.activeMode === 'auto') return state.autoTestType === 'n75' ? 75 : 50;
+    if (state.activeMode === 'semi' && state.semiTargetPa) return state.semiTargetPa;
+    return 50;
+}
 
-    if (!Number.isFinite(fanPressurePa) || !Number.isFinite(buildingPressurePa)) {
-        return { valid: false };
-    }
+function getAchLabel() {
+    const t = getActiveTarget();
+    if (t === 50) return 'n50';
+    if (t === 75) return 'n75';
+    return `${t} Pa`;
+}
 
-    if (flowInputs.volume <= 0 || flowInputs.coefficientC <= 0 || flowInputs.exponentN <= 0) {
-        return { valid: false };
-    }
+function updateTargetDisplay() {
+    const t = getActiveTarget();
+    if (refs.heroTarget) refs.heroTarget.textContent = `${t} Pa`;
+    if (refs.heroModeLabel) refs.heroModeLabel.textContent = getAchLabel();
+}
 
-    const fanDpAbs = Math.abs(fanPressurePa);
-    const buildingDpAbs = Math.abs(buildingPressurePa);
-    if (fanDpAbs <= 0 || buildingDpAbs < MIN_BUILDING_PRESSURE_FOR_ACH) {
-        return { valid: false };
-    }
+function updateAutoButtons() {
+    if (refs.autoN50Btn) refs.autoN50Btn.classList.toggle('active', state.autoTestType === 'n50');
+    if (refs.autoN75Btn) refs.autoN75Btn.classList.toggle('active', state.autoTestType === 'n75');
+}
 
-    const airDensity = getAirDensity(flowInputs.altitude, buildingTemperatureC);
-    const densityFactor = Math.sqrt(SEA_LEVEL_AIR_DENSITY / airDensity);
+/* ── Display helpers ── */
 
-    const qFanM3h = flowInputs.coefficientC
-        * Math.pow(fanDpAbs, flowInputs.exponentN)
-        * flowInputs.apertureScale
-        * densityFactor;
+function updatePwmDisplay(value) {
+    const v = clamp(Math.round(toNum(value, 0)), 0, 100);
+    if (refs.pwmDisplay) refs.pwmDisplay.textContent = String(v);
+    if (refs.sensorPwmVal) refs.sensorPwmVal.textContent = `${v} %`;
+    if (refs.fanSlider && document.activeElement !== refs.fanSlider) refs.fanSlider.value = String(v);
+}
 
-    const qRefM3h = qFanM3h * Math.pow(targetPressure / buildingDpAbs, 0.65);
-    const achInstant = qRefM3h / flowInputs.volume;
+function updatePill(el, ok, hasReading) {
+    if (!el) return;
+    el.classList.remove('ok', 'err');
+    if (!hasReading) { el.textContent = '--'; return; }
+    el.textContent = ok ? 'OK' : 'ERR';
+    el.classList.add(ok ? 'ok' : 'err');
+}
 
-    if (!Number.isFinite(achInstant) || achInstant < 0) {
-        return { valid: false };
-    }
+function updateApertureLabel() {
+    if (!refs.apertureAreaLabel) return;
+    const d = clamp(toNum(refs.fanApertureCm?.value, FULL_APERTURE_DIAMETER_CM), 5, 60) / 100;
+    refs.apertureAreaLabel.textContent = `${(Math.PI * (d / 2) ** 2).toFixed(4)} m²`;
+}
+
+/* ── Drawer ── */
+
+function openDrawer() {
+    if (refs.settingsDrawer) { refs.settingsDrawer.classList.add('open'); refs.settingsDrawer.setAttribute('aria-hidden', 'false'); }
+    if (refs.drawerBackdrop) refs.drawerBackdrop.hidden = false;
+    fetchOtaStatus();
+}
+
+function closeDrawer() {
+    if (refs.settingsDrawer) { refs.settingsDrawer.classList.remove('open'); refs.settingsDrawer.setAttribute('aria-hidden', 'true'); }
+    if (refs.drawerBackdrop) refs.drawerBackdrop.hidden = true;
+}
+
+/* ── Flow / ACH computation ── */
+
+function getFlowInputs() {
+    const vol = toNum(refs.buildingVolume?.value, 0);
+    const C = toNum(refs.fanCoefC?.value, 0);
+    const n = toNum(refs.fanCoefN?.value, 0);
+    const alt = toNum(refs.altitude?.value, DEFAULT_ALTITUDE_M);
+    const apCm = clamp(toNum(refs.fanApertureCm?.value, FULL_APERTURE_DIAMETER_CM), 5, 60);
+    const area = Math.PI * ((apCm / 100) / 2) ** 2;
+    const fullArea = Math.PI * ((FULL_APERTURE_DIAMETER_CM / 100) / 2) ** 2;
+    return { vol, C, n, alt, area, scale: area / fullArea };
+}
+
+function airDensity(alt, tempC) {
+    const a = clamp(toNum(alt, DEFAULT_ALTITUDE_M), 0, 6000);
+    const pPa = 101325 * Math.pow(1 - 2.25577e-5 * a, 5.25588);
+    const tK = (Number.isFinite(tempC) ? tempC : 20) + 273.15;
+    return pPa / (287.05 * tK);
+}
+
+function computeAch(fanPa, bldgPa, bldgTempC) {
+    const target = getActiveTarget();
+    const f = getFlowInputs();
+    if (!Number.isFinite(fanPa) || !Number.isFinite(bldgPa)) return { valid: false };
+    if (f.vol <= 0 || f.C <= 0 || f.n <= 0) return { valid: false };
+    const fanAbs = Math.abs(fanPa);
+    const bldgAbs = Math.abs(bldgPa);
+    if (fanAbs <= 0 || bldgAbs < MIN_BUILDING_PRESSURE_FOR_ACH) return { valid: false };
+
+    const rho = airDensity(f.alt, bldgTempC);
+    const df = Math.sqrt(SEA_LEVEL_AIR_DENSITY / rho);
+    const qFan = f.C * Math.pow(fanAbs, f.n) * f.scale * df;
+    const qRef = qFan * Math.pow(target / bldgAbs, 0.65);
+    const instant = qRef / f.vol;
+    if (!Number.isFinite(instant) || instant < 0) return { valid: false };
 
     const now = Date.now();
-    state.achHistory.push({ timestamp: now, value: achInstant });
-    while (state.achHistory.length > 0 && now - state.achHistory[0].timestamp > ACH_WINDOW_MS) {
-        state.achHistory.shift();
-    }
-
-    const sum = state.achHistory.reduce((acc, item) => acc + item.value, 0);
-    const average = sum / Math.max(state.achHistory.length, 1);
-
-    return {
-        valid: true,
-        instant: achInstant,
-        average,
-    };
+    state.achHistory.push({ t: now, v: instant });
+    while (state.achHistory.length && now - state.achHistory[0].t > ACH_WINDOW_MS) state.achHistory.shift();
+    const avg = state.achHistory.reduce((s, i) => s + i.v, 0) / Math.max(state.achHistory.length, 1);
+    return { valid: true, instant, avg };
 }
 
-function updateHeroMetrics(fanPressurePa, buildingPressurePa, buildingTemperatureC) {
-    if (refs.heroPressure) {
-        refs.heroPressure.textContent = formatMetric(buildingPressurePa, 'Pa', 1);
-    }
+function resetAch() { state.achHistory.length = 0; }
 
-    const ach = computeAchForMode(fanPressurePa, buildingPressurePa, buildingTemperatureC);
-    if (!refs.heroAch || !refs.heroAchInstant) {
-        return;
-    }
-
-    if (!ach.valid) {
-        refs.heroAch.textContent = '--';
-        refs.heroAchInstant.textContent = '--';
-        return;
-    }
-
-    refs.heroAch.textContent = ach.average.toFixed(2);
+function updateHero(fanPa, bldgPa, bldgTempC) {
+    if (refs.heroPa) refs.heroPa.textContent = fmt(bldgPa, 'Pa', 1);
+    const ach = computeAch(fanPa, bldgPa, bldgTempC);
+    if (!refs.heroAch || !refs.heroAchInstant) return;
+    if (!ach.valid) { refs.heroAch.textContent = '--'; refs.heroAchInstant.textContent = '--'; return; }
+    refs.heroAch.textContent = ach.avg.toFixed(2);
     refs.heroAchInstant.textContent = ach.instant.toFixed(2);
 }
 
-function resetAchHistory() {
-    state.achHistory.length = 0;
-}
+/* ── Control loop ── */
 
-function extractTelemetry(data) {
-    const rawFanPressure = toFiniteNumber(
-        data.dp1_pressure ?? data.dp_pressure ?? data.dpPressure,
-        Number.NaN,
-    );
-    const rawFanTemperature = toFiniteNumber(
-        data.dp1_temperature ?? data.dp_temperature ?? data.dpTemperature,
-        Number.NaN,
-    );
-
-    const rawEnvelopePressure = toFiniteNumber(data.dp2_pressure, Number.NaN);
-    const rawEnvelopeTemperature = toFiniteNumber(data.dp2_temperature, Number.NaN);
-
-    const fanOffset = Number.isFinite(state.baseline.fanOffset) ? state.baseline.fanOffset : 0;
-    const envelopeOffset = Number.isFinite(state.baseline.envelopeOffset) ? state.baseline.envelopeOffset : 0;
-
-    const correctedFanPressure = Number.isFinite(rawFanPressure) ? rawFanPressure - fanOffset : Number.NaN;
-    const correctedEnvelopePressure = Number.isFinite(rawEnvelopePressure)
-        ? rawEnvelopePressure - envelopeOffset
-        : Number.NaN;
-
-    return {
-        pwm: Number.isFinite(data.pwm) ? Number(data.pwm) : Number.NaN,
-        relayEnabled: parseBooleanFlag(data.relay),
-        autoHoldEnabled: parseBooleanFlag(data.led),
-        frequencyHz: toFiniteNumber(data.frequency, Number.NaN),
-
-        fanPressurePa: correctedFanPressure,
-        fanTemperatureC: rawFanTemperature,
-        fanOk: parseBooleanFlag(data.dp1_ok ?? data.dp_ok),
-
-        envelopePressurePa: correctedEnvelopePressure,
-        envelopeTemperatureC: rawEnvelopeTemperature,
-        envelopeOk: parseBooleanFlag(data.dp2_ok),
-
-        rawFanPressure,
-        rawEnvelopePressure,
-    };
-}
-
-async function postJson(url, payload) {
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-    });
-
-    const text = await response.text();
-    let parsed = null;
-
-    if (text) {
-        try {
-            parsed = JSON.parse(text);
-        } catch (_error) {
-            parsed = null;
-        }
-    }
-
-    if (!response.ok) {
-        const reason = parsed && typeof parsed.reason === 'string' ? parsed.reason : '';
-        const message = reason
-            ? `HTTP ${response.status} ${reason}`
-            : `HTTP ${response.status}`;
-        const error = new Error(message);
-        error.responsePayload = parsed;
-        throw error;
-    }
-
-    return parsed;
-}
-
-async function sendUpdate(endpoint, value) {
-    const route = API_ROUTES[endpoint] || `/api/${endpoint}`;
-    await postJson(route, { value });
-}
-
-async function sendPwmUpdateCoalesced(value) {
-    const clampedValue = clamp(Math.round(toFiniteNumber(value, 0)), 0, 100);
-
-    if (pwmRequestInFlight) {
-        pendingPwmValue = clampedValue;
-        return;
-    }
-
-    pwmRequestInFlight = true;
-    try {
-        await sendUpdate('pwm', clampedValue);
-    } finally {
-        pwmRequestInFlight = false;
-        if (pendingPwmValue !== null && pendingPwmValue !== clampedValue) {
-            const nextValue = pendingPwmValue;
-            pendingPwmValue = null;
-            await sendPwmUpdateCoalesced(nextValue);
-        } else {
-            pendingPwmValue = null;
-        }
-    }
-}
-
-function requestControlPwm(value) {
-    const clampedValue = clamp(Math.round(toFiniteNumber(value, 0)), 0, 100);
-    if (state.control.lastSetPwm === clampedValue) {
-        return;
-    }
-
-    state.control.lastSetPwm = clampedValue;
-    updateManualSpeedDisplay(clampedValue);
-    sendPwmUpdateCoalesced(clampedValue)
-        .then(() => {
-            setConnectionState('connected', 'PWM command applied');
-        })
-        .catch((error) => {
-            console.error('Error sending PWM:', error);
-            setConnectionState('error', 'Failed to send PWM');
-        });
-}
-
-function stopControlSession(stopFan) {
-    state.control.active = false;
-    state.control.stage = 'idle';
-    state.control.lastSetPwm = null;
-    state.control.pid.integral = 0;
-    state.control.pid.lastError = 0;
-    state.control.pid.lastTime = Date.now();
-
-    if (stopFan) {
-        requestControlPwm(0);
-        sendUpdate('relay', 0).catch((error) => {
-            console.error('Could not disable relay:', error);
-        });
-        if (refs.fanPowerToggle) {
-            refs.fanPowerToggle.checked = false;
-        }
-    }
-}
-
-function startControlSession() {
-    const targetPa = getSelectedTargetPressure();
-
+function startControl(targetPa) {
     state.control.active = true;
     state.control.stage = 'ramp';
     state.control.targetPa = targetPa;
     state.control.lastSetPwm = null;
-    state.control.pid.integral = 0;
-    state.control.pid.lastError = targetPa;
-    state.control.pid.lastTime = Date.now();
-
-    setSessionState(`${state.selectedMode} test active · ramping to ${targetPa} Pa`);
-
-    if (refs.autoHoldToggle && !refs.autoHoldToggle.checked) {
-        refs.autoHoldToggle.checked = true;
-        sendUpdate('led', 1).catch((error) => {
-            console.error('Could not enable auto hold:', error);
-        });
-    }
-
-    if (refs.fanPowerToggle && !refs.fanPowerToggle.checked) {
-        refs.fanPowerToggle.checked = true;
-    }
-    sendUpdate('relay', 1).catch((error) => {
-        console.error('Could not enable relay:', error);
-    });
-
-    requestControlPwm(100);
+    state.control.pid = { integral: 0, lastError: targetPa, lastTime: Date.now() };
+    updateTargetDisplay();
+    setStatus(`Ramping to ${targetPa} Pa...`);
+    sendCmd('led', 1).catch(() => {});
+    sendCmd('relay', 1).catch(() => {});
+    requestPwm(100);
 }
 
-function processControlLoop(buildingPressurePa, sensorOk) {
-    if (!state.control.active || !Number.isFinite(buildingPressurePa) || !sensorOk) {
-        return;
-    }
+function stopControl(stopFan) {
+    state.control.active = false;
+    state.control.stage = 'idle';
+    state.control.lastSetPwm = null;
+    state.control.pid = { integral: 0, lastError: 0, lastTime: Date.now() };
 
-    const measuredPa = Math.abs(buildingPressurePa);
-    const targetPa = state.control.targetPa;
+    refs.pressureBtns.forEach((b) => b.classList.remove('active'));
+    if (refs.semiStopBtn) refs.semiStopBtn.disabled = true;
+    state.semiTargetPa = null;
+
+    if (stopFan) {
+        requestPwm(0);
+        sendCmd('relay', 0).catch(() => {});
+        sendCmd('led', 0).catch(() => {});
+    }
+    updateTargetDisplay();
+}
+
+function processControl(bldgPa, sensorOk) {
+    if (!state.control.active || !Number.isFinite(bldgPa) || !sensorOk) return;
+    const measured = Math.abs(bldgPa);
+    const target = state.control.targetPa;
 
     if (state.control.stage === 'ramp') {
-        if (measuredPa >= targetPa * CONTROL_RAMP_THRESHOLD_RATIO) {
+        if (measured >= target * RAMP_RATIO) {
             state.control.stage = 'control';
-            state.control.pid.integral = 0;
-            state.control.pid.lastError = targetPa - measuredPa;
-            state.control.pid.lastTime = Date.now();
-            setSessionState(`${state.selectedMode} test active · fine control`);
-        } else {
-            requestControlPwm(100);
-        }
+            state.control.pid = { integral: 0, lastError: target - measured, lastTime: Date.now() };
+            setStatus(`Holding at ${target} Pa`);
+        } else { requestPwm(100); }
         return;
     }
 
     const now = Date.now();
     let dt = (now - state.control.pid.lastTime) / 1000;
-    if (dt <= 0) {
-        dt = 0.1;
-    }
+    if (dt <= 0) dt = 0.1;
     state.control.pid.lastTime = now;
 
-    const error = targetPa - measuredPa;
-    if (Math.abs(error) <= CONTROL_PID.deadbandPa) {
-        return;
-    }
+    const err = target - measured;
+    if (Math.abs(err) <= PID.deadband) return;
 
-    state.control.pid.integral = clamp(state.control.pid.integral + error * dt, -80, 80);
-    const derivative = (error - state.control.pid.lastError) / dt;
-    state.control.pid.lastError = error;
+    state.control.pid.integral = clamp(state.control.pid.integral + err * dt, -80, 80);
+    const deriv = (err - state.control.pid.lastError) / dt;
+    state.control.pid.lastError = err;
 
-    const correction = CONTROL_PID.kp * error
-        + CONTROL_PID.ki * state.control.pid.integral
-        + CONTROL_PID.kd * derivative;
-
-    const rawPwm = clamp(CONTROL_PID.basePwm + correction, 0, 100);
-    const previous = state.control.lastSetPwm;
-    const smoothedPwm = Number.isFinite(previous)
-        ? (previous * 0.7) + (rawPwm * 0.3)
-        : rawPwm;
-
-    requestControlPwm(smoothedPwm);
+    const correction = PID.kp * err + PID.ki * state.control.pid.integral + PID.kd * deriv;
+    const raw = clamp(PID.base + correction, 0, 100);
+    const prev = state.control.lastSetPwm;
+    const smoothed = Number.isFinite(prev) ? prev * 0.7 + raw * 0.3 : raw;
+    requestPwm(smoothed);
 }
 
-function captureZeroCalibration() {
-    if (!latestTelemetry) {
-        setSessionState('no telemetry available for calibration');
-        return;
-    }
+/* ── Telemetry ── */
 
-    const telemetry = extractTelemetry(latestTelemetry);
+function extractTelemetry(data) {
+    const rawFanPa = toNum(data.dp1_pressure ?? data.dp_pressure, NaN);
+    const rawFanT = toNum(data.dp1_temperature ?? data.dp_temperature, NaN);
+    const rawEnvPa = toNum(data.dp2_pressure, NaN);
+    const rawEnvT = toNum(data.dp2_temperature, NaN);
+    const fOff = Number.isFinite(state.baseline.fanOffset) ? state.baseline.fanOffset : 0;
+    const eOff = Number.isFinite(state.baseline.envelopeOffset) ? state.baseline.envelopeOffset : 0;
 
-    if (!Number.isFinite(telemetry.rawFanPressure) || !Number.isFinite(telemetry.rawEnvelopePressure)) {
-        setSessionState('no valid readings for calibration');
-        return;
-    }
-
-    state.baseline.fanOffset = telemetry.rawFanPressure;
-    state.baseline.envelopeOffset = telemetry.rawEnvelopePressure;
-    state.baseline.capturedAt = new Date();
-    updateBaselineBadge();
-    resetAchHistory();
-
-    setSessionState('zero calibration applied');
-
-    handleTelemetryPayload(latestTelemetry, 'calibration applied');
+    return {
+        pwm: Number.isFinite(data.pwm) ? Number(data.pwm) : NaN,
+        relay: toBool(data.relay),
+        autoHold: toBool(data.led),
+        freqHz: toNum(data.frequency, NaN),
+        fanPa: Number.isFinite(rawFanPa) ? rawFanPa - fOff : NaN,
+        fanT: rawFanT,
+        fanOk: toBool(data.dp1_ok ?? data.dp_ok),
+        envPa: Number.isFinite(rawEnvPa) ? rawEnvPa - eOff : NaN,
+        envT: rawEnvT,
+        envOk: toBool(data.dp2_ok),
+        rawFanPa, rawEnvPa,
+        fw: typeof data.fw === 'string' ? data.fw : null,
+    };
 }
 
-function applyAnemometerCalibration() {
-    const speedMs = toFiniteNumber(refs.anemoSpeed?.value, Number.NaN);
-    if (!Number.isFinite(speedMs) || speedMs <= 0 || !latestTelemetry) {
-        return;
-    }
-
-    const telemetry = extractTelemetry(latestTelemetry);
-    if (!Number.isFinite(telemetry.fanPressurePa) || telemetry.fanPressurePa <= 0) {
-        setSessionState('no fan ΔP available to recalibrate C');
-        return;
-    }
-
-    const flowInputs = getFlowCalibrationInputs();
-    if (flowInputs.exponentN <= 0 || flowInputs.apertureScale <= 0) {
-        return;
-    }
-
-    const qMeasuredM3h = speedMs * flowInputs.apertureArea * 3600;
-    const airDensity = getAirDensity(flowInputs.altitude, telemetry.envelopeTemperatureC);
-    const densityFactor = Math.sqrt(SEA_LEVEL_AIR_DENSITY / airDensity);
-
-    const suggestedC = qMeasuredM3h
-        / (Math.pow(Math.abs(telemetry.fanPressurePa), flowInputs.exponentN)
-            * flowInputs.apertureScale
-            * densityFactor);
-
-    if (!Number.isFinite(suggestedC) || suggestedC <= 0) {
-        return;
-    }
-
-    if (refs.fanCoefC) {
-        refs.fanCoefC.value = suggestedC.toFixed(1);
-    }
-
-    resetAchHistory();
-    setSessionState(`C recalibrated: ${suggestedC.toFixed(1)}`);
-
-    handleTelemetryPayload(latestTelemetry, 'C coefficient recalibrated');
-}
-
-function handleTelemetryPayload(data, sourceDetail) {
-    if (!data) {
-        return;
-    }
-
+function handleTelemetry(data, detail) {
+    if (!data) return;
     latestTelemetry = data;
-    const telemetry = extractTelemetry(data);
+    const t = extractTelemetry(data);
 
-    if (telemetry.fanOk) {
-        state.sensorHealth.fanEverValid = true;
-    }
-    if (telemetry.envelopeOk) {
-        state.sensorHealth.envelopeEverValid = true;
-    }
+    if (t.fanOk) state.sensorHealth.fanEverValid = true;
+    if (t.envOk) state.sensorHealth.envelopeEverValid = true;
 
-    if (Number.isFinite(telemetry.pwm)) {
-        updateManualSpeedDisplay(telemetry.pwm);
-        state.lastManualSpeed = telemetry.pwm;
-    }
+    if (Number.isFinite(t.pwm)) { updatePwmDisplay(t.pwm); state.lastManualSpeed = t.pwm; }
 
-    if (refs.fanPowerToggle) {
-        refs.fanPowerToggle.checked = telemetry.relayEnabled || (Number.isFinite(telemetry.pwm) && telemetry.pwm > 0);
-    }
+    if (refs.fanPaVal) refs.fanPaVal.textContent = fmt(t.fanPa, 'Pa', 1);
+    if (refs.fanTempVal) refs.fanTempVal.textContent = fmt(t.fanT, '°C', 1);
+    updatePill(refs.fanStatusPill, t.fanOk, Number.isFinite(t.rawFanPa));
 
-    if (refs.autoHoldToggle) {
-        refs.autoHoldToggle.checked = telemetry.autoHoldEnabled;
-    }
+    if (refs.bldgPaVal) refs.bldgPaVal.textContent = fmt(t.envPa, 'Pa', 1);
+    if (refs.bldgTempVal) refs.bldgTempVal.textContent = fmt(t.envT, '°C', 1);
+    updatePill(refs.bldgStatusPill, t.envOk, Number.isFinite(t.rawEnvPa));
 
-    if (refs.dpVentPressureValue) {
-        refs.dpVentPressureValue.textContent = formatMetric(telemetry.fanPressurePa, 'Pa', 1);
-    }
-    if (refs.dpVentTemperatureValue) {
-        refs.dpVentTemperatureValue.textContent = formatMetric(telemetry.fanTemperatureC, '°C', 1);
-    }
-    updateStatusPill(
-        refs.dpVentStatus,
-        telemetry.fanOk,
-        Number.isFinite(telemetry.rawFanPressure),
-    );
+    if (refs.lineFreqVal) refs.lineFreqVal.textContent = fmt(t.freqHz, 'Hz', 1);
 
-    if (refs.dpBuildingPressureValue) {
-        refs.dpBuildingPressureValue.textContent = formatMetric(telemetry.envelopePressurePa, 'Pa', 1);
-    }
-    if (refs.dpBuildingTemperatureValue) {
-        refs.dpBuildingTemperatureValue.textContent = formatMetric(telemetry.envelopeTemperatureC, '°C', 1);
-    }
-    updateStatusPill(
-        refs.dpBuildingStatus,
-        telemetry.envelopeOk,
-        Number.isFinite(telemetry.rawEnvelopePressure),
-    );
+    updateHero(t.fanPa, t.envPa, t.envT);
+    processControl(t.envPa, t.envOk);
 
-    if (refs.fanFrequencyValue) {
-        refs.fanFrequencyValue.textContent = formatMetric(telemetry.frequencyHz, 'Hz', 1);
+    if (t.fw) {
+        if (refs.fwVersion) refs.fwVersion.textContent = `Firmware: ${t.fw}`;
+        if (refs.fwVersionLabel) refs.fwVersionLabel.textContent = t.fw;
+        if (refs.otaVersionInput && !state.ota.versionTouched && !refs.otaVersionInput.value.trim()) {
+            refs.otaVersionInput.value = t.fw;
+        }
     }
 
-    updateHeroMetrics(
-        telemetry.fanPressurePa,
-        telemetry.envelopePressurePa,
-        telemetry.envelopeTemperatureC,
-    );
-
-    processControlLoop(telemetry.envelopePressurePa, telemetry.envelopeOk);
-
-    if (!telemetry.fanOk || !telemetry.envelopeOk) {
-        state.sensorHealth.faultCycles += 1;
-    } else {
-        state.sensorHealth.faultCycles = 0;
-    }
+    if (!t.fanOk || !t.envOk) state.sensorHealth.faultCycles++;
+    else state.sensorHealth.faultCycles = 0;
 
     if (state.sensorHealth.faultCycles >= 3) {
-        setConnectionState('error', 'ADP910 communication error (I2C)');
-        setSessionState('ADP910 read error: check wiring, power and pull-ups');
+        setConn('err', 'Sensor error');
+        setStatus('ADP910 read error: check wiring');
     } else {
-        setConnectionState('connected', sourceDetail || 'real-time telemetry');
+        setConn('ok', 'Connected');
     }
-    stampLastUpdate();
+    stampUpdate();
 }
 
-function closeEventStream() {
-    if (sseReconnectTimer) {
-        clearTimeout(sseReconnectTimer);
-        sseReconnectTimer = null;
-    }
+/* ── SSE ── */
 
-    if (eventSource) {
-        eventSource.close();
-        eventSource = null;
-    }
+function closeSSE() {
+    if (sseReconnectTimer) { clearTimeout(sseReconnectTimer); sseReconnectTimer = null; }
+    if (eventSource) { eventSource.close(); eventSource = null; }
 }
 
-function scheduleSseReconnect() {
-    if (sseReconnectTimer) {
-        return;
-    }
-
+function scheduleReconnect() {
+    if (sseReconnectTimer) return;
     sseReconnectTimer = setTimeout(() => {
         sseReconnectTimer = null;
         sseRetryDelayMs = Math.min(sseRetryDelayMs * 2, SSE_RETRY_MAX_MS);
-        connectEventStream();
+        connectSSE();
     }, sseRetryDelayMs);
 }
 
-function connectEventStream() {
-    closeEventStream();
-
-    try {
-        eventSource = new EventSource(API_ROUTES.events);
-    } catch (error) {
-        console.error('Could not open SSE:', error);
-        setConnectionState('error', 'error opening SSE, retrying');
-        scheduleSseReconnect();
-        return;
-    }
+function connectSSE() {
+    closeSSE();
+    try { eventSource = new EventSource(API.events); }
+    catch { setConn('err', 'SSE error'); scheduleReconnect(); return; }
 
     eventSource.onopen = () => {
         sseRetryDelayMs = SSE_RETRY_BASE_MS;
         hasReceivedSseEvent = false;
-        setConnectionState('connected', 'SSE connected');
+        setConn('ok', 'Connected');
     };
 
-    eventSource.onmessage = (event) => {
+    eventSource.onmessage = (ev) => {
         try {
-            const payload = JSON.parse(event.data);
-            handleTelemetryPayload(payload, 'SSE active');
+            handleTelemetry(JSON.parse(ev.data), 'SSE');
             hasReceivedSseEvent = true;
-        } catch (error) {
-            console.error('Invalid SSE payload:', error);
-        }
+        } catch {}
     };
 
-    eventSource.onerror = (error) => {
-        const transientStartupError = !hasReceivedSseEvent && sseRetryDelayMs === SSE_RETRY_BASE_MS;
-        if (!transientStartupError) {
-            console.error('SSE error:', error);
-        }
-        closeEventStream();
-        setConnectionState(
-            'error',
-            hasReceivedSseEvent
-                ? 'SSE interrupted, reconnecting'
-                : 'SSE unavailable, retrying',
-        );
+    eventSource.onerror = () => {
+        closeSSE();
+        setConn('err', hasReceivedSseEvent ? 'Reconnecting...' : 'Connecting...');
         hasReceivedSseEvent = false;
-        scheduleSseReconnect();
+        scheduleReconnect();
     };
 }
 
-function updateOtaStatusView(payload) {
-    if (!payload || typeof payload !== 'object') {
-        return;
-    }
+/* ── OTA ── */
 
-    if (typeof payload.firmware_version === 'string') {
-        if (refs.firmwareVersionLabel) {
-            refs.firmwareVersionLabel.textContent = payload.firmware_version;
-        }
-        if (refs.firmwareVersionTop) {
-            refs.firmwareVersionTop.textContent = payload.firmware_version;
-        }
-        if (refs.firmwareVersionFooter) {
-            refs.firmwareVersionFooter.textContent = `Firmware: ${payload.firmware_version}`;
-        }
-        if (refs.otaVersionInput && !state.ota.versionTouched && refs.otaVersionInput.value.trim() === '') {
-            refs.otaVersionInput.value = payload.firmware_version;
-        }
+function applyOtaStatus(p) {
+    if (!p || typeof p !== 'object') return;
+    if (typeof p.firmware_version === 'string') {
+        if (refs.fwVersionLabel) refs.fwVersionLabel.textContent = p.firmware_version;
+        if (refs.fwVersion) refs.fwVersion.textContent = `Firmware: ${p.firmware_version}`;
     }
-
-    const stateLabel = String(payload.state || 'idle');
-    const progress = clamp(toFiniteNumber(payload.progress_percent, 0), 0, 100);
-    const stagedVersion = typeof payload.staged_version === 'string' ? payload.staged_version : '';
-    const lastError = typeof payload.last_error === 'string' ? payload.last_error : '';
-
-    if (stateLabel === 'receiving') {
-        setOtaProgress(progress, `Uploading firmware ${Math.round(progress)}%`);
-    } else if (stateLabel === 'ready') {
-        setOtaProgress(100, `Firmware staged (${stagedVersion || 'no label'})`);
-    } else if (stateLabel === 'applying') {
-        setOtaProgress(progress, 'Applying firmware and rebooting...');
-    } else if (stateLabel === 'error') {
-        setOtaProgress(progress, `OTA error: ${lastError || 'unknown'}`);
-    } else {
-        setOtaProgress(0, 'OTA idle');
-    }
+    const s = String(p.state || 'idle');
+    const pct = clamp(toNum(p.progress_percent, 0), 0, 100);
+    const sv = typeof p.staged_version === 'string' ? p.staged_version : '';
+    const le = typeof p.last_error === 'string' ? p.last_error : '';
+    if (s === 'receiving') setOtaProgress(pct, `Uploading ${Math.round(pct)}%`);
+    else if (s === 'ready') setOtaProgress(100, `Staged (${sv || 'unlabeled'})`);
+    else if (s === 'applying') setOtaProgress(pct, 'Applying...');
+    else if (s === 'error') setOtaProgress(pct, `Error: ${le || 'unknown'}`);
+    else setOtaProgress(0, 'OTA idle');
 }
 
-async function refreshOtaStatus() {
+async function fetchOtaStatus() {
     try {
-        const response = await fetch(API_ROUTES.otaStatus, { cache: 'no-store' });
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        const payload = await response.json();
-        updateOtaStatusView(payload);
-    } catch (error) {
-        const isNetworkIssue = error instanceof TypeError;
-        if (!isNetworkIssue) {
-            console.error('Error in /api/ota/status:', error);
-        }
-    }
+        const r = await fetch(API.otaStatus, { cache: 'no-store' });
+        if (r.ok) applyOtaStatus(await r.json());
+    } catch {}
 }
 
-async function uploadFirmwareOta() {
-    if (state.ota.uploadInProgress || state.ota.applyInProgress) {
-        return;
-    }
-
-    const file = refs.otaFileInput?.files?.[0] || null;
-    if (!file) {
-        setSessionState('select a .bin before uploading OTA');
-        return;
-    }
+async function uploadOta() {
+    if (state.ota.uploadInProgress || state.ota.applyInProgress) return;
+    const file = refs.otaFileInput?.files?.[0];
+    if (!file) { setStatus('Select a .bin file first'); return; }
 
     state.ota.uploadInProgress = true;
-    setOtaControlsBusy(true);
-
+    setOtaBusy(true);
     try {
-        setSessionState('starting OTA transfer');
-        setOtaProgress(0, 'Reading firmware...');
+        setStatus('Uploading firmware...');
+        setOtaProgress(0, 'Reading file...');
+        const buf = new Uint8Array(await file.arrayBuffer());
+        const crcVal = crc32(buf);
+        const activeVer = refs.fwVersionLabel?.textContent?.trim() || '0.0.0-dev';
+        const ver = (refs.otaVersionInput?.value || activeVer).trim() || activeVer;
 
-        const arrayBuffer = await file.arrayBuffer();
-        const firmwareBytes = new Uint8Array(arrayBuffer);
-        const crc32 = computeCrc32(firmwareBytes);
-        const activeVersion =
-            refs.firmwareVersionLabel?.textContent?.trim()
-            || refs.firmwareVersionTop?.textContent?.trim()
-            || '0.0.0-dev';
-        const versionLabelRaw = refs.otaVersionInput?.value || activeVersion;
-        const versionLabel = versionLabelRaw.trim() || activeVersion;
-
-        await postJson(API_ROUTES.otaBegin, {
-            size: firmwareBytes.length,
-            crc32,
-            version: versionLabel,
-        });
-
-        let offset = 0;
-        while (offset < firmwareBytes.length) {
-            const chunk = firmwareBytes.subarray(offset, offset + OTA_CHUNK_SIZE_BYTES);
-            const chunkB64 = bytesToBase64(chunk);
-            await postJson(API_ROUTES.otaChunk, {
-                offset,
-                data: chunkB64,
-            });
-
-            offset += chunk.length;
-            const progress = (offset * 100) / firmwareBytes.length;
-            setOtaProgress(progress, `Uploading firmware ${Math.round(progress)}%`);
+        await postJson(API.otaBegin, { size: buf.length, crc32: crcVal, version: ver });
+        let off = 0;
+        while (off < buf.length) {
+            const chunk = buf.subarray(off, off + OTA_CHUNK_SIZE);
+            await postJson(API.otaChunk, { offset: off, data: bytesToBase64(chunk) });
+            off += chunk.length;
+            setOtaProgress((off * 100) / buf.length, `Uploading ${Math.round((off * 100) / buf.length)}%`);
         }
-
-        await postJson(API_ROUTES.otaFinish, {});
-        setSessionState('OTA uploaded. Press apply to reboot.');
-        setOtaProgress(100, `OTA firmware uploaded (${versionLabel})`);
-        await refreshOtaStatus();
-    } catch (error) {
-        console.error('Error during OTA upload:', error);
-        setSessionState('OTA upload failed');
-        setOtaProgress(0, 'OTA upload error');
-        await refreshOtaStatus();
+        await postJson(API.otaFinish, {});
+        setStatus('Firmware uploaded. Press Apply to reboot.');
+        setOtaProgress(100, `Uploaded (${ver})`);
+        await fetchOtaStatus();
+    } catch (e) {
+        setStatus('OTA upload failed');
+        setOtaProgress(0, 'Upload error');
+        await fetchOtaStatus();
     } finally {
         state.ota.uploadInProgress = false;
-        setOtaControlsBusy(false);
+        setOtaBusy(false);
     }
 }
 
-async function applyFirmwareOta() {
-    if (state.ota.uploadInProgress || state.ota.applyInProgress) {
-        return;
-    }
-
+async function applyOta() {
+    if (state.ota.uploadInProgress || state.ota.applyInProgress) return;
     state.ota.applyInProgress = true;
-    setOtaControlsBusy(true);
-    setSessionState('applying OTA firmware');
-
+    setOtaBusy(true);
+    setStatus('Applying firmware...');
     try {
-        setOtaProgress(100, 'Applying firmware and rebooting...');
-        await postJson(API_ROUTES.otaApply, {});
-        setConnectionState('error', 'device rebooting due to OTA');
-    } catch (error) {
-        console.error('Error during OTA apply:', error);
-        setSessionState('OTA apply failed');
+        setOtaProgress(100, 'Applying and rebooting...');
+        await postJson(API.otaApply, {});
+        setConn('err', 'Rebooting...');
+    } catch {
+        setStatus('OTA apply failed');
     } finally {
         state.ota.applyInProgress = false;
-        setOtaControlsBusy(false);
-        setTimeout(() => {
-            refreshOtaStatus();
-        }, 5000);
+        setOtaBusy(false);
+        setTimeout(fetchOtaStatus, 5000);
     }
 }
 
-function debounce(fn, delayMs) {
-    let timerId = null;
-    return (...args) => {
-        if (timerId) {
-            clearTimeout(timerId);
-        }
-        timerId = setTimeout(() => fn(...args), delayMs);
-    };
+/* ── Anemometer calibration ── */
+
+function applyAnemoCalibration() {
+    const speed = toNum(refs.anemoSpeed?.value, NaN);
+    if (!Number.isFinite(speed) || speed <= 0 || !latestTelemetry) return;
+    const t = extractTelemetry(latestTelemetry);
+    if (!Number.isFinite(t.fanPa) || t.fanPa <= 0) { setStatus('No fan ΔP for calibration'); return; }
+    const f = getFlowInputs();
+    if (f.n <= 0 || f.scale <= 0) return;
+    const qMeasured = speed * f.area * 3600;
+    const rho = airDensity(f.alt, t.envT);
+    const df = Math.sqrt(SEA_LEVEL_AIR_DENSITY / rho);
+    const newC = qMeasured / (Math.pow(Math.abs(t.fanPa), f.n) * f.scale * df);
+    if (!Number.isFinite(newC) || newC <= 0) return;
+    if (refs.fanCoefC) refs.fanCoefC.value = newC.toFixed(1);
+    resetAch();
+    setStatus(`C recalibrated: ${newC.toFixed(1)}`);
+    if (latestTelemetry) handleTelemetry(latestTelemetry, 'C updated');
 }
 
+/* ── Debounce ── */
+
+function debounce(fn, ms) {
+    let id = null;
+    return (...args) => { if (id) clearTimeout(id); id = setTimeout(() => fn(...args), ms); };
+}
+
+/* ── Event binding ── */
+
 function bindEvents() {
-    refs.modeN50Btn?.addEventListener('click', () => {
-        state.selectedMode = 'n50';
-        state.control.targetPa = getSelectedTargetPressure();
-        updateModeButtons();
-        saveUiSettings();
-        resetAchHistory();
-        if (latestTelemetry) {
-            handleTelemetryPayload(latestTelemetry, 'n50 mode selected');
-        }
+    refs.modeTabs.forEach((tab) => {
+        tab.addEventListener('click', () => switchMode(tab.dataset.mode));
     });
 
-    refs.modeN75Btn?.addEventListener('click', () => {
-        state.selectedMode = 'n75';
-        state.control.targetPa = getSelectedTargetPressure();
-        updateModeButtons();
-        saveUiSettings();
-        resetAchHistory();
-        if (latestTelemetry) {
-            handleTelemetryPayload(latestTelemetry, 'n75 mode selected');
-        }
-    });
-
-    refs.settingsToggleBtn?.addEventListener('click', () => {
-        setSettingsPanelOpen(true);
-    });
-
-    refs.settingsCloseBtn?.addEventListener('click', () => {
-        setSettingsPanelOpen(false);
-    });
-
-    refs.settingsBackdrop?.addEventListener('click', () => {
-        setSettingsPanelOpen(false);
-    });
+    refs.settingsBtn?.addEventListener('click', openDrawer);
+    refs.closeDrawerBtn?.addEventListener('click', closeDrawer);
+    refs.drawerBackdrop?.addEventListener('click', closeDrawer);
 
     refs.calibrateBtn?.addEventListener('click', async () => {
-        stopControlSession(false);
-        requestControlPwm(0);
-
+        stopControl(false);
+        requestPwm(0);
         try {
-            await postJson(API_ROUTES.calibrate, {});
-            captureZeroCalibration();
-        } catch (error) {
-            console.error('Could not calibrate on firmware:', error);
-            setConnectionState('error', `calibration failed: ${error.message}`);
-            setSessionState(`zero calibration failed: ${error.message}`);
+            await postJson(API.calibrate, {});
+            captureCalibration();
+        } catch (e) {
+            setConn('err', 'Calibration failed');
+            setStatus(`Calibration failed: ${e.message}`);
         }
+    });
+
+    /* Manual mode */
+    const debouncedPwm = debounce((v) => {
+        requestPwm(v);
+        if (v > 0) sendCmd('relay', 1).catch(() => {});
+        else sendCmd('relay', 0).catch(() => {});
+    }, 140);
+
+    refs.fanSlider?.addEventListener('input', (e) => {
+        if (!isCalibrated()) return;
+        const v = clamp(toNum(e.target.value, 0), 0, 100);
+        if (state.control.active) stopControl(false);
+        state.lastManualSpeed = v;
+        updatePwmDisplay(v);
+        debouncedPwm(v);
+    });
+
+    refs.quickBtns.forEach((btn) => {
+        btn.addEventListener('click', () => {
+            if (!isCalibrated()) { setStatus('Calibrate first'); return; }
+            const v = clamp(toNum(btn.dataset.speed, 0), 0, 100);
+            if (state.control.active) stopControl(false);
+            state.lastManualSpeed = v;
+            requestPwm(v);
+            if (v > 0) sendCmd('relay', 1).catch(() => {});
+            else sendCmd('relay', 0).catch(() => {});
+            setStatus(`Power: ${v}%`);
+        });
+    });
+
+    refs.manualStopBtn?.addEventListener('click', () => {
+        if (state.control.active) stopControl(false);
+        requestPwm(0);
+        sendCmd('relay', 0).catch(() => {});
+        sendCmd('led', 0).catch(() => {});
+        setStatus('Fan stopped');
+    });
+
+    /* Semi-auto mode */
+    refs.pressureBtns.forEach((btn) => {
+        btn.addEventListener('click', () => {
+            if (!isCalibrated()) { setStatus('Calibrate first'); return; }
+            const pa = toNum(btn.dataset.pa, 50);
+            state.semiTargetPa = pa;
+            refs.pressureBtns.forEach((b) => b.classList.toggle('active', b === btn));
+            if (refs.semiStopBtn) refs.semiStopBtn.disabled = false;
+            startControl(pa);
+        });
+    });
+
+    refs.semiStopBtn?.addEventListener('click', () => {
+        stopControl(true);
+        setStatus('Pressure hold stopped');
+    });
+
+    /* Auto mode */
+    refs.autoN50Btn?.addEventListener('click', () => {
+        state.autoTestType = 'n50';
+        updateAutoButtons();
+        updateTargetDisplay();
+        saveSettings();
+        resetAch();
+        if (latestTelemetry) handleTelemetry(latestTelemetry, 'n50');
+    });
+
+    refs.autoN75Btn?.addEventListener('click', () => {
+        state.autoTestType = 'n75';
+        updateAutoButtons();
+        updateTargetDisplay();
+        saveSettings();
+        resetAch();
+        if (latestTelemetry) handleTelemetry(latestTelemetry, 'n75');
     });
 
     refs.startTestBtn?.addEventListener('click', () => {
-        startControlSession();
+        if (!isCalibrated()) { setStatus('Calibrate first'); return; }
+        const target = state.autoTestType === 'n75' ? 75 : 50;
+        startControl(target);
     });
 
     refs.stopTestBtn?.addEventListener('click', () => {
-        stopControlSession(true);
-        setSessionState('test stopped');
+        stopControl(true);
+        setStatus('Test stopped');
     });
 
-    refs.fanPowerToggle?.addEventListener('change', async (event) => {
-        const shouldEnable = event.target.checked;
-        if (!shouldEnable) {
-            stopControlSession(true);
-            setSessionState('fan stopped');
-            return;
-        }
-
-        try {
-            await sendUpdate('relay', 1);
-            const target = state.lastManualSpeed > 0 ? state.lastManualSpeed : 40;
-            requestControlPwm(target);
-            setSessionState('fan enabled');
-        } catch (error) {
-            console.error('Could not enable relay:', error);
-            event.target.checked = false;
-            setConnectionState('error', 'could not enable fan');
-        }
-    });
-
-    refs.autoHoldToggle?.addEventListener('change', async (event) => {
-        const enabled = event.target.checked;
-        try {
-            await sendUpdate('led', enabled ? 1 : 0);
-            setSessionState(enabled ? 'auto hold enabled' : 'auto hold disabled');
-        } catch (error) {
-            console.error('Could not update auto hold:', error);
-            event.target.checked = !enabled;
-            setConnectionState('error', 'failed to change auto hold');
-        }
-    });
-
-    const sendManualPwm = debounce((value) => {
-        requestControlPwm(value);
-    }, 140);
-
-    refs.fanSpeed?.addEventListener('input', (event) => {
-        const value = clamp(toFiniteNumber(event.target.value, 0), 0, 100);
-        stopControlSession(false);
-        state.lastManualSpeed = value;
-        updateManualSpeedDisplay(value);
-        sendManualPwm(value);
-    });
-
-    refs.quickButtons.forEach((button) => {
-        button.addEventListener('click', () => {
-            const value = clamp(toFiniteNumber(button.dataset.speed, 0), 0, 100);
-            stopControlSession(false);
-            state.lastManualSpeed = value;
-            requestControlPwm(value);
-            setSessionState(`manual power set to ${value}%`);
-        });
-    });
-
-    refs.applyAnemoBtn?.addEventListener('click', () => {
-        applyAnemometerCalibration();
-    });
-
-    refs.otaUploadBtn?.addEventListener('click', () => {
-        uploadFirmwareOta();
-    });
-
-    refs.otaApplyBtn?.addEventListener('click', () => {
-        applyFirmwareOta();
-    });
-
+    /* Settings fields */
+    refs.applyAnemoBtn?.addEventListener('click', applyAnemoCalibration);
+    refs.otaUploadBtn?.addEventListener('click', uploadOta);
+    refs.otaApplyBtn?.addEventListener('click', applyOta);
     refs.otaFileInput?.addEventListener('change', () => {
-        const file = refs.otaFileInput?.files?.[0] || null;
-        if (!file) {
-            setOtaProgress(0, 'OTA idle');
-            return;
-        }
-        setOtaProgress(0, `File ready: ${file.name}`);
+        const f = refs.otaFileInput?.files?.[0];
+        setOtaProgress(0, f ? `Ready: ${f.name}` : 'OTA idle');
     });
+    refs.otaVersionInput?.addEventListener('input', () => { state.ota.versionTouched = true; });
 
-    refs.otaVersionInput?.addEventListener('input', () => {
-        state.ota.versionTouched = true;
-    });
-
-    [
-        refs.buildingVolume,
-        refs.fanApertureCm,
-        refs.altitude,
-        refs.fanCoefC,
-        refs.fanCoefN,
-    ].forEach((input) => {
+    [refs.buildingVolume, refs.fanApertureCm, refs.altitude, refs.fanCoefC, refs.fanCoefN].forEach((input) => {
         input?.addEventListener('change', () => {
-            saveUiSettings();
-            updateApertureAreaLabel();
-            resetAchHistory();
-            if (latestTelemetry) {
-                handleTelemetryPayload(latestTelemetry, 'parameters updated');
-            }
+            saveSettings(); updateApertureLabel(); resetAch();
+            if (latestTelemetry) handleTelemetry(latestTelemetry, 'settings');
         });
-        input?.addEventListener('input', saveUiSettings);
+        input?.addEventListener('input', saveSettings);
     });
 }
 
-function bootstrap() {
-    loadUiSettings();
-    updateModeButtons();
-    updateApertureAreaLabel();
-    updateBaselineBadge();
-    updateManualSpeedDisplay(0);
-    setOtaProgress(0, 'OTA idle');
-    setSessionState('idle');
-    setConnectionState('idle', 'waiting for telemetry');
+/* ── Bootstrap ── */
 
+function bootstrap() {
+    loadSettings();
+    updateAutoButtons();
+    updateTargetDisplay();
+    updateApertureLabel();
+    updateCalBanner();
+    updatePwmDisplay(0);
+    setOtaProgress(0, 'OTA idle');
+    setStatus('Idle');
+    setConn('idle', 'Connecting');
     bindEvents();
-    connectEventStream();
-    refreshOtaStatus();
-    otaStatusRefreshTimer = setInterval(() => {
-        refreshOtaStatus();
-    }, OTA_STATUS_REFRESH_INTERVAL_MS);
+    connectSSE();
 }
 
 window.addEventListener('load', bootstrap);
-
-window.addEventListener('beforeunload', () => {
-    closeEventStream();
-    if (otaStatusRefreshTimer) {
-        clearInterval(otaStatusRefreshTimer);
-        otaStatusRefreshTimer = null;
-    }
-});
+window.addEventListener('beforeunload', closeSSE);
